@@ -352,7 +352,7 @@ export class Renderer {
       cx + flickerX - coreRadius * 0.2, cy + flickerY - coreRadius * 0.2, 0,
       cx + flickerX, cy + flickerY, coreRadius
     );
-    orbGrad.addColorStop(0, `rgba(255, 255, 255, ${0.6 + intensity * 0.3})`);
+    orbGrad.addColorStop(0, `rgba(${drawCol.join(',')}, ${0.8 + intensity * 0.2})`);
     orbGrad.addColorStop(0.4, `rgb(${drawCol.join(',')})`);
     orbGrad.addColorStop(1, `rgba(${drawCol.map(c => Math.floor(c * 0.5)).join(',')}, 0.8)`);
 
@@ -375,7 +375,7 @@ export class Renderer {
     const innerAlpha = dmg > 0.1
       ? 0.3 + Math.random() * 0.3  // flicker when damaged
       : 0.4 + intensity * 0.3 + this.beatPulse * 0.3;
-    ctx.fillStyle = `rgba(255, 255, 255, ${innerAlpha})`;
+    ctx.fillStyle = `rgba(${drawCol.join(',')}, ${innerAlpha})`;
     ctx.beginPath();
     ctx.arc(cx + flickerX, cy + flickerY, innerR, 0, Math.PI * 2);
     ctx.fill();
@@ -999,7 +999,7 @@ export class Renderer {
       cx - coreR * 0.2, cy - coreR * 0.2, 0,
       cx, cy, coreR
     );
-    orbGrad.addColorStop(0, 'rgba(255, 255, 255, 0.6)');
+    orbGrad.addColorStop(0, `rgba(${col.join(',')}, 0.8)`);
     orbGrad.addColorStop(0.4, `rgb(${col.join(',')})`);
     orbGrad.addColorStop(1, `rgba(${col.map(c => Math.floor(c * 0.4)).join(',')}, 0.8)`);
 
