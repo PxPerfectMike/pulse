@@ -10,13 +10,40 @@ const renderer = new Renderer(canvas);
 const audio = new AudioSystem();
 
 let lastRAFTimestamp = 0;  // performance.now() of last frame
-let lastBeatTime = 0;
 let deathTimestamp = 0;
 let deathElapsed = 0;
 let startScreenTime = 0;
 let retryReady = false;
-let lastLives = 0;
-let lastCombo = 0;
+
+// --- Engine event subscriptions ---
+
+engine.on('beat', ({ momentum }) => {
+  audio.playBeat(momentum);
+  renderer.onBeat();
+});
+
+engine.on('hit', (result) => {
+  audio.playHit(result.quality, engine.state.momentum);
+});
+
+engine.on('miss', ({ obstacle, graceProtected }) => {
+  if (!graceProtected) {
+    renderer.spawnMissParticles(renderer.cx, renderer.cy);
+    audio.playMiss();
+  }
+});
+
+engine.on('comboMilestone', () => {
+  audio.playComboMilestone();
+});
+
+engine.on('lifeGain', () => {
+  audio.playLifeGain();
+});
+
+engine.on('death', () => {
+  // Death handled in game loop (needs RAF timestamp)
+});
 
 // --- Precise tap timing ---
 // The engine tracks its own cumulative time. When a tap arrives between frames,
@@ -39,8 +66,6 @@ function handleTap() {
     audio.init();
     audio.resume();
     engine.start();
-    lastLives = s.lives;
-    lastCombo = 0;
     lastRAFTimestamp = performance.now();
     return;
   }
@@ -48,16 +73,11 @@ function handleTap() {
   if (s.phase === 'dead') {
     if (retryReady) {
       engine.reset();
-      renderer.particles = [];
-      renderer.hitTextQueue = [];
-      renderer.ambientParticles = [];
-      renderer.coreDamageFlash = 0;
+      renderer.reset();
       deathTimestamp = 0;
       deathElapsed = 0;
       retryReady = false;
       engine.start();
-      lastLives = engine.state.lives;
-      lastCombo = 0;
       lastRAFTimestamp = performance.now();
       audio.resume();
     }
@@ -66,11 +86,7 @@ function handleTap() {
 
   if (s.phase === 'running') {
     audio.resume();
-    const tapTime = getEngineTapTime();
-    const result = engine.tap(tapTime);
-    if (result) {
-      audio.playHit(result.quality, s.momentum);
-    }
+    engine.tap(getEngineTapTime());
   }
 }
 
@@ -119,38 +135,6 @@ function gameLoop(timestamp) {
 
   if (s.phase === 'running') {
     engine.update(dt);
-
-    // Check for beat (for audio tick)
-    const tempo = engine.getCurrentTempo();
-    if (s.time - lastBeatTime > tempo) {
-      lastBeatTime = s.time;
-      audio.playBeat(s.momentum);
-    }
-
-    // Check for miss events (life lost)
-    if (s.lives < lastLives) {
-      const missedObs = s.obstacles.find(o => o.missed && !o._missPlayed);
-      if (missedObs) {
-        missedObs._missPlayed = true;
-        renderer.spawnMissParticles(renderer.cx, renderer.cy);
-      }
-      audio.playMiss();
-      lastLives = s.lives;
-    }
-
-    // Check for combo milestones
-    if (s.combo > 0 && s.combo % 25 === 0 && s.combo !== lastCombo) {
-      audio.playComboMilestone();
-      lastCombo = s.combo;
-    }
-
-    // Check for life gained
-    if (s.lives > lastLives) {
-      audio.playLifeGain();
-      lastLives = s.lives;
-    }
-
-    // Update drone
     audio.updateDrone(s.momentum);
   }
 

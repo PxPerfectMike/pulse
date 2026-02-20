@@ -26,6 +26,31 @@ const PALETTE = {
   miss: [255, 40, 40],
 };
 
+const CORE = {
+  BASE_RADIUS: 30,
+  MOMENTUM_GROWTH: 15,
+  BREATHE_AMPLITUDE: 3,
+  BREATHE_SPEED: 400,     // ms per cycle
+  BEAT_SCALE: 12,
+  AURA_MULTIPLIER: 3,
+  INNER_RADIUS_RATIO: 0.4,
+};
+
+const RING = {
+  DANGER_THRESHOLD: 0.08,
+  URGENCY_START: 0.65,
+  BASE_THICKNESS: 2.5,
+  THICKNESS_GROWTH: 4,
+  MAX_RADIUS_RATIO: 0.55,  // fraction of min(width, height)
+};
+
+const VISUAL = {
+  STAR_COUNT: 120,
+  GEOMETRY_FADE_START: 0.3,
+  SPEED_LINES_START: 0.15,
+  AMBIENT_START: 0.4,
+};
+
 // Particle types
 const PARTICLE_TYPES = {
   HIT_SPARK: 'hit_spark',
@@ -41,12 +66,13 @@ export class Renderer {
     this.ctx = canvas.getContext('2d');
     this.particles = [];
     this.hitTextQueue = [];
-    this.lastBeatTime = 0;
     this.beatPulse = 0;
     this.bgStars = [];
     this.ambientParticles = [];
     this.geometryRotation = 0;
     this.coreDamageFlash = 0;  // red flash on core when hit by miss
+    this._shatteredIds = new Set();
+    this._missAnimatedIds = new Set();
 
     // Center coords (set in _resize)
     this.cx = 0;
@@ -55,6 +81,20 @@ export class Renderer {
     this._initStars();
     this._resize();
     window.addEventListener('resize', () => this._resize());
+  }
+
+  reset() {
+    this.particles = [];
+    this.hitTextQueue = [];
+    this.ambientParticles = [];
+    this.coreDamageFlash = 0;
+    this.beatPulse = 0;
+    this._shatteredIds.clear();
+    this._missAnimatedIds.clear();
+  }
+
+  onBeat() {
+    this.beatPulse = 0.8;
   }
 
   _resize() {
@@ -68,12 +108,12 @@ export class Renderer {
 
     this.cx = this.width / 2;
     this.cy = this.height / 2;
-    this.maxRingRadius = Math.min(this.width, this.height) * 0.55;
+    this.maxRingRadius = Math.min(this.width, this.height) * RING.MAX_RADIUS_RATIO;
   }
 
   _initStars() {
     this.bgStars = [];
-    for (let i = 0; i < 120; i++) {
+    for (let i = 0; i < VISUAL.STAR_COUNT; i++) {
       this.bgStars.push({
         x: Math.random(),
         y: Math.random(),
@@ -102,7 +142,7 @@ export class Renderer {
     this._drawBackground(ctx, s, intensity, dt);
 
     // Background geometry (at higher momentum)
-    if (intensity > 0.3) {
+    if (intensity > VISUAL.GEOMETRY_FADE_START) {
       this._drawBackgroundGeometry(ctx, s, intensity, dt);
     }
 
@@ -146,8 +186,9 @@ export class Renderer {
     this.coreDamageFlash *= 0.93;
     if (this.coreDamageFlash < 0.01) this.coreDamageFlash = 0;
 
-    // Beat pulse
-    this._updateBeatPulse(s, dt);
+    // Beat pulse decay
+    this.beatPulse *= 0.92;
+    if (this.beatPulse < 0.01) this.beatPulse = 0;
   }
 
   // --- Background ---
@@ -189,7 +230,7 @@ export class Renderer {
   // --- Background geometry (subtle rotating shapes at high momentum) ---
 
   _drawBackgroundGeometry(ctx, s, intensity, dt) {
-    const alpha = (intensity - 0.3) * 0.15;
+    const alpha = (intensity - VISUAL.GEOMETRY_FADE_START) * 0.15;
     if (alpha <= 0) return;
 
     this.geometryRotation += (dt / 1000) * 0.3 * intensity;
@@ -236,9 +277,9 @@ export class Renderer {
   // --- Radial speed lines (emanating from center) ---
 
   _drawRadialSpeedLines(ctx, s, intensity, dt) {
-    if (intensity < 0.15) return;
+    if (intensity < VISUAL.SPEED_LINES_START) return;
 
-    const alpha = Math.min(0.3, (intensity - 0.15) * 0.4);
+    const alpha = Math.min(0.3, (intensity - VISUAL.SPEED_LINES_START) * 0.4);
     const lineCount = 20 + Math.floor(intensity * 30);
     const time = s.time || 0;
 
@@ -273,7 +314,7 @@ export class Renderer {
   _drawTargetRing(ctx, s, intensity) {
     const cx = this.cx;
     const cy = this.cy;
-    const coreR = this._coreRadius || 35;
+    const coreR = this._coreRadius || (CORE.BASE_RADIUS + 5);
     const time = s.time || 0;
 
     // Pulsing target ring sits just outside the core — "tap when rings reach here"
@@ -313,18 +354,18 @@ export class Renderer {
     const time = s.time || 0;
 
     // Breathing
-    const breathe = Math.sin(time / 400) * 3;
+    const breathe = Math.sin(time / CORE.BREATHE_SPEED) * CORE.BREATHE_AMPLITUDE;
 
     // Beat bounce
-    const beatScale = this.beatPulse * 12;
+    const beatScale = this.beatPulse * CORE.BEAT_SCALE;
 
-    // Core radius: 30 base + momentum growth + breathe + beat
-    const coreRadius = 30 + s.momentum * 15 + breathe + beatScale;
+    // Core radius: base + momentum growth + breathe + beat
+    const coreRadius = CORE.BASE_RADIUS + s.momentum * CORE.MOMENTUM_GROWTH + breathe + beatScale;
 
     const col = this._getMomentumColor(s.momentum);
 
     // Outer aura glow
-    const auraR = coreRadius * 3 + intensity * 20;
+    const auraR = coreRadius * CORE.AURA_MULTIPLIER + intensity * 20;
     const auraGrad = ctx.createRadialGradient(cx, cy, coreRadius * 0.5, cx, cy, auraR);
     auraGrad.addColorStop(0, `rgba(${col.join(',')}, ${0.2 + intensity * 0.15})`);
     auraGrad.addColorStop(0.4, `rgba(${col.join(',')}, ${0.05 + intensity * 0.05})`);
@@ -371,7 +412,7 @@ export class Renderer {
     }
 
     // Bright inner core
-    const innerR = coreRadius * 0.4;
+    const innerR = coreRadius * CORE.INNER_RADIUS_RATIO;
     const innerAlpha = dmg > 0.1
       ? 0.3 + Math.random() * 0.3  // flicker when damaged
       : 0.4 + intensity * 0.3 + this.beatPulse * 0.3;
@@ -391,14 +432,14 @@ export class Renderer {
   _drawRings(ctx, s, intensity) {
     const cx = this.cx;
     const cy = this.cy;
-    const coreR = this._coreRadius || 30;
+    const coreR = this._coreRadius || CORE.BASE_RADIUS;
     const maxR = this.maxRingRadius;
 
     for (const obs of s.obstacles) {
       if (obs.hit) {
         // Shatter effect — spawn particles on first frame of hit
-        if (!obs._shattered) {
-          obs._shattered = true;
+        if (!this._shatteredIds.has(obs.id)) {
+          this._shatteredIds.add(obs.id);
           // Ring radius at time of hit
           const hitR = coreR + (maxR - coreR) * Math.max(0, obs.position);
           this._spawnRingHitParticles(cx, cy, hitR, obs.quality);
@@ -408,8 +449,8 @@ export class Renderer {
 
       if (obs.missed) {
         // Dramatic miss: ring slams into core then red shockwave out
-        if (!obs._missAnimated) {
-          obs._missAnimated = true;
+        if (!this._missAnimatedIds.has(obs.id)) {
+          this._missAnimatedIds.add(obs.id);
           // Trigger core damage flash
           this.coreDamageFlash = 1.0;
           // Spawn inward-collapsing shockwave
@@ -465,18 +506,18 @@ export class Renderer {
       const proximity = 1 - pos; // 0 = far, 1 = at core
 
       // Ring color: soft purple far → bright white close → red warning if about to miss
-      const isInDanger = pos < 0.08; // very close to core, about to miss
-      const dangerT = isInDanger ? 1 - (pos / 0.08) : 0; // 0→1 as it approaches miss
+      const isInDanger = pos < RING.DANGER_THRESHOLD; // very close to core, about to miss
+      const dangerT = isInDanger ? 1 - (pos / RING.DANGER_THRESHOLD) : 0; // 0→1 as it approaches miss
       let col = this._lerpColor(PALETTE.ringFar, PALETTE.ringClose, proximity);
       if (dangerT > 0) {
         col = this._lerpColor(col, PALETTE.miss, dangerT * 0.7);
       }
 
       // Thickness: visible from far, thick up close
-      const thickness = 2.5 + proximity * 4;
+      const thickness = RING.BASE_THICKNESS + proximity * RING.THICKNESS_GROWTH;
 
       // Glow — visible from spawn, brighter as it approaches
-      const urgency = Math.max(0, proximity - 0.65) / 0.35;
+      const urgency = Math.max(0, proximity - RING.URGENCY_START) / (1 - RING.URGENCY_START);
       const glowAlpha = 0.6 + proximity * 0.3 + urgency * 0.1;
 
       // Urgency pulse in final 35% + danger flash when about to miss
@@ -488,7 +529,7 @@ export class Renderer {
       ctx.globalAlpha = Math.min(1, glowAlpha + urgencyPulse);
 
       // Ring glow (outer bloom)
-      if (proximity > 0.3) {
+      if (proximity > VISUAL.GEOMETRY_FADE_START) {
         ctx.shadowColor = `rgb(${col.join(',')})`;
         ctx.shadowBlur = 5 + proximity * 15;
       }
@@ -502,6 +543,11 @@ export class Renderer {
       ctx.shadowBlur = 0;
       ctx.globalAlpha = 1;
     }
+
+    // Prune IDs for obstacles no longer in state
+    const activeIds = new Set(s.obstacles.map(o => o.id));
+    for (const id of this._shatteredIds) if (!activeIds.has(id)) this._shatteredIds.delete(id);
+    for (const id of this._missAnimatedIds) if (!activeIds.has(id)) this._missAnimatedIds.delete(id);
   }
 
   // --- Ring hit effects ---
@@ -570,7 +616,7 @@ export class Renderer {
     this.hitTextQueue.push({
       text: quality.toUpperCase() + '!',
       x: cx,
-      y: cy - 60 - (this._coreRadius || 30),
+      y: cy - 60 - (this._coreRadius || CORE.BASE_RADIUS),
       color: [...color],
       time: 0,
       duration: 800,
@@ -651,19 +697,19 @@ export class Renderer {
   // --- Ambient orbiting particles ---
 
   _updateAmbientParticles(ctx, s, intensity, dt) {
-    if (intensity < 0.4) {
+    if (intensity < VISUAL.AMBIENT_START) {
       this.ambientParticles = [];
       return;
     }
 
     const time = s.time || 0;
-    const targetCount = Math.floor((intensity - 0.4) * 30);
+    const targetCount = Math.floor((intensity - VISUAL.AMBIENT_START) * 30);
 
     // Spawn new ambient particles
     while (this.ambientParticles.length < targetCount) {
       this.ambientParticles.push({
         angle: Math.random() * Math.PI * 2,
-        dist: (this._coreRadius || 30) * (1.5 + Math.random() * 2),
+        dist: (this._coreRadius || CORE.BASE_RADIUS) * (1.5 + Math.random() * 2),
         speed: 0.5 + Math.random() * 1.5,
         size: 1 + Math.random() * 2,
         brightness: 0.3 + Math.random() * 0.5,
@@ -681,7 +727,7 @@ export class Renderer {
       const x = this.cx + Math.cos(p.angle) * (p.dist + wobble);
       const y = this.cy + Math.sin(p.angle) * (p.dist + wobble);
 
-      ctx.globalAlpha = p.brightness * (intensity - 0.3);
+      ctx.globalAlpha = p.brightness * (intensity - VISUAL.GEOMETRY_FADE_START);
       ctx.fillStyle = `rgb(${coreCol.join(',')})`;
       ctx.beginPath();
       ctx.arc(x, y, p.size, 0, Math.PI * 2);
@@ -842,7 +888,7 @@ export class Renderer {
     }
 
     // Lives — glowing dots in arc near core
-    const coreR = this._coreRadius || 30;
+    const coreR = this._coreRadius || CORE.BASE_RADIUS;
     const livesArcR = coreR + 25;
     const livesSpread = 0.15; // radians between each dot
     const livesBaseAngle = -Math.PI / 2; // top of core
@@ -871,32 +917,11 @@ export class Renderer {
       ctx.textAlign = 'right';
       ctx.font = '12px "Segoe UI", system-ui, sans-serif';
       ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
-      const tempo = 720 * Math.pow(0.55, s.momentum);
-      const bpm = Math.round(60000 / tempo);
+      const bpm = Math.round(60000 / s.tempo);
       ctx.fillText(`${bpm} BPM`, this.width - 20, this.height - 20);
     }
 
     ctx.restore();
-  }
-
-  // --- Beat pulse ---
-
-  _updateBeatPulse(s, dt) {
-    if (s.phase !== 'running') {
-      this.beatPulse *= 0.9;
-      return;
-    }
-
-    const tempo = 720 * Math.pow(0.55, s.momentum);
-    const beatPhase = (s.time % tempo) / tempo;
-
-    if (beatPhase < 0.1 && s.time - this.lastBeatTime > tempo * 0.5) {
-      this.beatPulse = 0.8;
-      this.lastBeatTime = s.time;
-    }
-
-    this.beatPulse *= 0.92;
-    if (this.beatPulse < 0.01) this.beatPulse = 0;
   }
 
   // --- Death screen overlay ---

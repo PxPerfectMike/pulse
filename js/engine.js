@@ -107,8 +107,17 @@ const DEFAULT_CONFIG = {
 export class GameEngine {
   constructor(config = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+    this._listeners = {};
     this.state = null;
     this.reset();
+  }
+
+  on(event, fn) {
+    (this._listeners[event] ||= []).push(fn);
+  }
+
+  _emit(event, data) {
+    for (const fn of this._listeners[event] || []) fn(data);
   }
 
   reset() {
@@ -131,6 +140,10 @@ export class GameEngine {
       obstacleIdCounter: 0,
       obstaclesSpawned: 0,
       nextObstacleTime: 0,
+
+      // Tempo & beat tracking
+      tempo: this.config.baseTempo,
+      lastBeatTime: 0,
 
       // Current speed (derived from momentum)
       speed: this.config.baseSpeed,
@@ -275,6 +288,7 @@ export class GameEngine {
 
     const result = { quality, precisionMs: absDiff, early: isEarly, obstacle: best };
     this.state.lastHit = result;
+    this._emit('hit', result);
     return result;
   }
 
@@ -300,6 +314,15 @@ export class GameEngine {
     s.tick++;
     s.time += dt;
     s.stats.survivalTime = s.time;
+
+    // Update tempo
+    s.tempo = this.getCurrentTempo();
+
+    // Beat tracking
+    if (s.time - s.lastBeatTime > s.tempo) {
+      s.lastBeatTime = s.time;
+      this._emit('beat', { momentum: s.momentum });
+    }
 
     // Update speed
     s.speed = this.getCurrentSpeed();
@@ -447,9 +470,11 @@ export class GameEngine {
       }
       // Life reward at milestones
       if (c.comboLifeReward > 0 && s.combo > 0 && s.combo % c.comboLifeReward === 0) {
+        this._emit('comboMilestone', { combo: s.combo });
         if (s.lives < c.maxLives) {
           s.lives++;
           s.stats.livesGained++;
+          this._emit('lifeGain', { lives: s.lives });
         }
       }
     } else {
@@ -520,6 +545,7 @@ export class GameEngine {
         combo: 0,
         score: s.score,
       });
+      this._emit('miss', { obstacle, graceProtected: true });
       return;
     }
 
@@ -546,9 +572,12 @@ export class GameEngine {
       score: s.score,
     });
 
+    this._emit('miss', { obstacle, graceProtected: false });
+
     // Death check
     if (s.lives <= 0) {
       s.phase = 'dead';
+      this._emit('death', {});
     }
   }
 }
