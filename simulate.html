@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>WEIRD — Simulation Harness</title>
+  <style>
+    body {
+      background: #0a0a1a;
+      color: #e0e0e0;
+      font-family: "Cascadia Code", "Fira Code", monospace;
+      padding: 24px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    h1 { color: #b88fff; margin-bottom: 8px; }
+    h2 { color: #7fadff; margin-top: 24px; margin-bottom: 8px; font-size: 16px; }
+    .subtitle { color: rgba(255,255,255,0.4); font-size: 13px; margin-bottom: 20px; }
+    pre {
+      background: #12122a;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 13px;
+      line-height: 1.6;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin: 12px 0;
+    }
+    .stat-card {
+      background: #12122a;
+      padding: 14px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .stat-card .label { color: rgba(255,255,255,0.4); font-size: 11px; text-transform: uppercase; }
+    .stat-card .value { color: white; font-size: 22px; font-weight: bold; margin-top: 4px; }
+    .stat-card .detail { color: rgba(255,255,255,0.35); font-size: 11px; margin-top: 2px; }
+    .perfect { color: #ffffff; }
+    .great { color: #00ffe6; }
+    .good { color: #508cff; }
+    .ok { color: #ffa028; }
+    .miss { color: #ff2828; }
+    .bar { height: 8px; border-radius: 4px; margin-top: 4px; }
+    button {
+      background: #b88fff;
+      color: #0a0a1a;
+      border: none;
+      padding: 10px 24px;
+      border-radius: 6px;
+      font-weight: bold;
+      cursor: pointer;
+      font-size: 14px;
+      margin: 8px 4px 8px 0;
+    }
+    button:hover { background: #d0b0ff; }
+    #output { white-space: pre-wrap; }
+    .chart-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 2px 0;
+      font-size: 12px;
+    }
+    .chart-bar {
+      height: 14px;
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+    .chart-label { min-width: 70px; text-align: right; color: rgba(255,255,255,0.5); }
+    .chart-value { min-width: 50px; color: rgba(255,255,255,0.6); }
+  </style>
+</head>
+<body>
+  <h1>WEIRD — Simulation Harness</h1>
+  <p class="subtitle">Headless game engine simulation. No rendering, pure numbers. This is how Claude "plays" the game.</p>
+
+  <button onclick="runSuite()">Run Full Analysis</button>
+  <button onclick="runSingle('perfect')">Simulate Perfect Player</button>
+  <button onclick="runSingle('human_good')">Simulate Good Human</button>
+  <button onclick="runSingle('human_avg')">Simulate Average Human</button>
+  <button onclick="runSingle('beginner')">Simulate Beginner</button>
+
+  <div id="results"></div>
+
+  <script type="module">
+    import { GameEngine, HIT_QUALITY } from './js/engine.js';
+
+    // Player profiles: mean precision (ms) and standard deviation
+    const PROFILES = {
+      perfect:    { name: 'Perfect (AI)',     mean: 8,   std: 5,   missRate: 0.00 },
+      human_pro:  { name: 'Pro Human',        mean: 22,  std: 12,  missRate: 0.01 },
+      human_good: { name: 'Good Human',       mean: 45,  std: 25,  missRate: 0.03 },
+      human_avg:  { name: 'Average Human',    mean: 75,  std: 35,  missRate: 0.06 },
+      beginner:   { name: 'Beginner',         mean: 120, std: 50,  missRate: 0.12 },
+      terrible:   { name: 'Terrible',         mean: 160, std: 60,  missRate: 0.25 },
+    };
+
+    // Gaussian random (Box-Muller)
+    function gaussRandom(mean, std) {
+      const u1 = Math.random();
+      const u2 = Math.random();
+      const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      return mean + z * std;
+    }
+
+    // Simulate a single game run
+    // Fixed: tap plans are assigned ONCE per obstacle (not re-rolled each frame),
+    // missRate is decided once, and engine.state.time handles hitstop correctly.
+    function simulateRun(profile, maxTime = 180000) {
+      const engine = new GameEngine();
+      engine.start();
+      const DT = 16.67;
+
+      while (engine.state.phase === 'running' && engine.state.time < maxTime) {
+        engine.update(DT);
+        const now = engine.state.time;
+
+        for (const obs of engine.state.obstacles) {
+          if (obs.hit || obs.missed) continue;
+
+          // Assign tap plan ONCE per obstacle
+          if (obs._plan === undefined) {
+            if (Math.random() < profile.missRate) {
+              obs._plan = null; // deliberately miss
+            } else {
+              const precision = Math.abs(gaussRandom(profile.mean, profile.std));
+              const earlyOrLate = Math.random() < 0.5 ? -1 : 1;
+              obs._plan = obs.hitTime + earlyOrLate * precision;
+            }
+          }
+
+          if (obs._plan === null) continue;
+
+          // Tap when engine time reaches the planned tap time (±1 frame)
+          if (now >= obs._plan - DT && now <= obs._plan + DT) {
+            engine.tap(obs._plan);
+          }
+        }
+      }
+      return engine.state;
+    }
+
+    // Run N simulations for a profile
+    function simulateBatch(profileKey, N = 300) {
+      const profile = PROFILES[profileKey];
+      const results = [];
+
+      for (let i = 0; i < N; i++) {
+        results.push(simulateRun(profile));
+      }
+
+      // Aggregate
+      const scores = results.map(r => r.score);
+      const survivals = results.map(r => r.stats.survivalTime / 1000);
+      const combos = results.map(r => r.maxCombo);
+      const precisions = results.map(r =>
+        r.stats.hitCount > 0 ? r.stats.totalPrecisionMs / r.stats.hitCount : 0
+      );
+
+      const avg = arr => arr.reduce((a, b) => a + b, 0) / arr.length;
+      const med = arr => { const s = [...arr].sort((a,b) => a-b); return s[Math.floor(s.length/2)]; };
+      const max = arr => Math.max(...arr);
+      const min = arr => Math.min(...arr);
+      const p95 = arr => { const s = [...arr].sort((a,b) => a-b); return s[Math.floor(s.length * 0.95)]; };
+
+      const qualityTotals = { perfect: 0, great: 0, good: 0, ok: 0, miss: 0 };
+      results.forEach(r => {
+        qualityTotals.perfect += r.stats.perfect;
+        qualityTotals.great += r.stats.great;
+        qualityTotals.good += r.stats.good;
+        qualityTotals.ok += r.stats.ok;
+        qualityTotals.miss += r.stats.miss;
+      });
+
+      return {
+        profile: profile.name,
+        profileKey,
+        N,
+        score: { avg: avg(scores), med: med(scores), max: max(scores), min: min(scores), p95: p95(scores) },
+        survival: { avg: avg(survivals), med: med(survivals), max: max(survivals), p95: p95(survivals) },
+        combo: { avg: avg(combos), med: med(combos), max: max(combos) },
+        precision: { avg: avg(precisions) },
+        qualityDist: qualityTotals,
+      };
+    }
+
+    // --- UI ---
+
+    function renderResults(batchResult) {
+      const b = batchResult;
+      const totalHits = b.qualityDist.perfect + b.qualityDist.great + b.qualityDist.good + b.qualityDist.ok + b.qualityDist.miss;
+
+      let html = `<h2>${b.profile} — ${b.N} simulated runs</h2>`;
+
+      html += `<div class="stat-grid">`;
+      html += statCard('Avg Score', Math.round(b.score.avg).toLocaleString(), `Med: ${Math.round(b.score.med).toLocaleString()} | P95: ${Math.round(b.score.p95).toLocaleString()}`);
+      html += statCard('Max Score', Math.round(b.score.max).toLocaleString(), `Min: ${Math.round(b.score.min).toLocaleString()}`);
+      html += statCard('Avg Survival', b.survival.avg.toFixed(1) + 's', `Max: ${b.survival.max.toFixed(1)}s | P95: ${b.survival.p95.toFixed(1)}s`);
+      html += statCard('Best Combo', b.combo.max, `Avg: ${b.combo.avg.toFixed(1)} | Med: ${b.combo.med}`);
+      html += statCard('Avg Precision', b.precision.avg.toFixed(1) + 'ms', '');
+      html += `</div>`;
+
+      // Quality distribution chart
+      html += `<h2>Hit Quality Distribution</h2>`;
+      const maxQ = Math.max(b.qualityDist.perfect, b.qualityDist.great, b.qualityDist.good, b.qualityDist.ok, b.qualityDist.miss);
+      const qualities = [
+        { key: 'perfect', label: 'Perfect', cls: 'perfect', color: '#fff' },
+        { key: 'great', label: 'Great', cls: 'great', color: '#00ffe6' },
+        { key: 'good', label: 'Good', cls: 'good', color: '#508cff' },
+        { key: 'ok', label: 'OK', cls: 'ok', color: '#ffa028' },
+        { key: 'miss', label: 'Miss', cls: 'miss', color: '#ff2828' },
+      ];
+
+      for (const q of qualities) {
+        const count = b.qualityDist[q.key];
+        const pct = totalHits > 0 ? (count / totalHits * 100).toFixed(1) : 0;
+        const barW = maxQ > 0 ? (count / maxQ) * 100 : 0;
+        html += `<div class="chart-row">
+          <span class="chart-label ${q.cls}">${q.label}</span>
+          <div class="chart-bar" style="width: ${barW}%; background: ${q.color}; opacity: 0.7;"></div>
+          <span class="chart-value">${count} (${pct}%)</span>
+        </div>`;
+      }
+
+      return html;
+    }
+
+    function statCard(label, value, detail) {
+      return `<div class="stat-card"><div class="label">${label}</div><div class="value">${value}</div><div class="detail">${detail}</div></div>`;
+    }
+
+    // Expose to global for button onclick
+    window.runSingle = function(profileKey) {
+      const el = document.getElementById('results');
+      el.innerHTML = '<p style="color:rgba(255,255,255,0.4)">Simulating...</p>';
+      setTimeout(() => {
+        const result = simulateBatch(profileKey, 300);
+        el.innerHTML = renderResults(result);
+      }, 50);
+    };
+
+    window.runSuite = function() {
+      const el = document.getElementById('results');
+      el.innerHTML = '<p style="color:rgba(255,255,255,0.4)">Running full analysis across all player profiles...</p>';
+      setTimeout(() => {
+        let html = '';
+        for (const key of Object.keys(PROFILES)) {
+          const result = simulateBatch(key, 300);
+          html += renderResults(result);
+        }
+
+        // Comparative summary
+        html += `<h2>Comparative Summary</h2><pre>`;
+        html += 'Profile          | Avg Score  | Med Survival | Hit Rate  | Avg Combo | Avg Precision\n';
+        html += '-----------------|------------|--------------|-----------|-----------|-------------\n';
+        for (const key of Object.keys(PROFILES)) {
+          const r = simulateBatch(key, 200);
+          const total = r.qualityDist.perfect + r.qualityDist.great + r.qualityDist.good + r.qualityDist.ok + r.qualityDist.miss;
+          const hitRate = ((1 - r.qualityDist.miss / total) * 100).toFixed(1);
+          html += `${r.profile.padEnd(17)}| ${String(Math.round(r.score.avg)).padStart(10)} | ${(r.survival.med.toFixed(1)+'s').padStart(12)} | ${(hitRate+'%').padStart(9)} | ${String(r.combo.avg.toFixed(1)).padStart(9)} | ${(r.precision.avg.toFixed(1)+'ms').padStart(10)}\n`;
+        }
+        html += '</pre>';
+
+        el.innerHTML = html;
+      }, 50);
+    };
+  </script>
+</body>
+</html>
